@@ -337,9 +337,7 @@ static void zend_file_cache_serialize_zval(zval                     *zv,
 				SERIALIZE_PTR(Z_AST_P(zv));
 				ast = Z_AST_P(zv);
 				UNSERIALIZE_PTR(ast);
-				if (!IS_SERIALIZED(ast->ast)) {
-					ast->ast = zend_file_cache_serialize_ast(ast->ast, script, info, buf);
-				}
+				zend_file_cache_serialize_ast(Z_ASTVAL_P(zv), script, info, buf);
 			}
 			break;
 	}
@@ -406,6 +404,13 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
 			if (opline->op2_type == IS_CONST) {
 				SERIALIZE_PTR(opline->op2.zv);
 			}
+#else
+			if (opline->op1_type == IS_CONST) {
+				ZEND_PASS_TWO_UNDO_CONSTANT(op_array, opline, opline->op1);
+			}
+			if (opline->op2_type == IS_CONST) {
+				ZEND_PASS_TWO_UNDO_CONSTANT(op_array, opline, opline->op2);
+			}
 #endif
 #if ZEND_USE_ABS_JMP_ADDR
 			switch (opline->opcode) {
@@ -431,6 +436,8 @@ static void zend_file_cache_serialize_op_array(zend_op_array            *op_arra
 				case ZEND_DECLARE_ANON_INHERITED_CLASS:
 				case ZEND_FE_FETCH_R:
 				case ZEND_FE_FETCH_RW:
+				case ZEND_SWITCH_LONG:
+				case ZEND_SWITCH_STRING:
 					/* relative extended_value don't have to be changed */
 					break;
 			}
@@ -941,10 +948,7 @@ static void zend_file_cache_unserialize_zval(zval                    *zv,
 				zend_ast_ref *ast;
 
 				UNSERIALIZE_PTR(Z_AST_P(zv));
-				ast = Z_AST_P(zv);
-				if (!IS_UNSERIALIZED(ast->ast)) {
-					ast->ast = zend_file_cache_unserialize_ast(ast->ast, script, buf);
-				}
+				zend_file_cache_unserialize_ast(Z_ASTVAL_P(zv), script, buf);
 			}
 			break;
 	}
@@ -998,15 +1002,22 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
 		opline = op_array->opcodes;
 		end = opline + op_array->last;
 		while (opline < end) {
-# if ZEND_USE_ABS_CONST_ADDR
+#if ZEND_USE_ABS_CONST_ADDR
 			if (opline->op1_type == IS_CONST) {
 				UNSERIALIZE_PTR(opline->op1.zv);
 			}
 			if (opline->op2_type == IS_CONST) {
 				UNSERIALIZE_PTR(opline->op2.zv);
 			}
-# endif
-# if ZEND_USE_ABS_JMP_ADDR
+#else
+			if (opline->op1_type == IS_CONST) {
+				ZEND_PASS_TWO_UPDATE_CONSTANT(op_array, opline, opline->op1);
+			}
+			if (opline->op2_type == IS_CONST) {
+				ZEND_PASS_TWO_UPDATE_CONSTANT(op_array, opline, opline->op2);
+			}
+#endif
+#if ZEND_USE_ABS_JMP_ADDR
 			switch (opline->opcode) {
 				case ZEND_JMP:
 				case ZEND_FAST_CALL:
@@ -1030,10 +1041,12 @@ static void zend_file_cache_unserialize_op_array(zend_op_array           *op_arr
 				case ZEND_DECLARE_ANON_INHERITED_CLASS:
 				case ZEND_FE_FETCH_R:
 				case ZEND_FE_FETCH_RW:
+				case ZEND_SWITCH_LONG:
+				case ZEND_SWITCH_STRING:
 					/* relative extended_value don't have to be changed */
 					break;
 			}
-# endif
+#endif
 			zend_deserialize_opcode_handler(opline);
 			opline++;
 		}

@@ -210,7 +210,7 @@ static void zend_signal_handler(int signo, siginfo_t *siginfo, void *context)
 #endif
 			}
 		}
-	} else {
+	} else if (p_sig.handler != SIG_IGN) {
 		if (p_sig.flags & SA_SIGINFO) {
 			if (p_sig.flags & SA_RESETHAND) {
 				SIGG(handlers)[signo-1].flags   = 0;
@@ -443,6 +443,6 @@ void zend_signal_startup(void)
  * c-basic-offset: 4
  * indent-tabs-mode: t
  * End:
- * vim600: fdm=marker
- * vim: noet sw=4 ts=4
+ * vim600: sw=4 ts=4 fdm=marker
+ * vim<600: sw=4 ts=4
  */

@@ -711,9 +711,9 @@ ZEND_METHOD(exception, __toString)
 		zend_string_release(file);
 		zval_ptr_dtor(&trace);
 
-		Z_OBJPROP_P(exception)->u.v.nApplyCount++;
+		Z_PROTECT_RECURSION_P(exception);
 		exception = GET_PROPERTY(exception, ZEND_STR_PREVIOUS);
-		if (exception && Z_TYPE_P(exception) == IS_OBJECT && Z_OBJPROP_P(exception)->u.v.nApplyCount > 0) {
+		if (exception && Z_TYPE_P(exception) == IS_OBJECT && Z_IS_RECURSIVE_P(exception)) {
 			break;
 		}
 	}
@@ -722,8 +722,8 @@ ZEND_METHOD(exception, __toString)
 	exception = getThis();
 	/* Reset apply counts */
 	while (exception && Z_TYPE_P(exception) == IS_OBJECT && (base_ce = i_get_exception_base(exception)) && instanceof_function(Z_OBJCE_P(exception), base_ce)) {
-		if (Z_OBJPROP_P(exception)->u.v.nApplyCount) {
-			Z_OBJPROP_P(exception)->u.v.nApplyCount--;
+		if (Z_IS_RECURSIVE_P(exception)) {
+			Z_UNPROTECT_RECURSION_P(exception);
 		} else {
 			break;
 		}
@@ -1049,4 +1049,6 @@ ZEND_API ZEND_COLD void zend_throw_exception_object(zval *exception) /* {{{ */
  * c-basic-offset: 4
  * indent-tabs-mode: t
  * End:
+ * vim600: sw=4 ts=4 fdm=marker
+ * vim<600: sw=4 ts=4
  */

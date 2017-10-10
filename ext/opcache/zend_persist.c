@@ -273,7 +273,6 @@ static zend_ast *zend_persist_ast(zend_ast *ast)
 		}
 	}
 
-	efree(ast);
 	return node;
 }
 
@@ -305,7 +304,6 @@ static void zend_persist_zval(zval *z)
 					GC_REFCOUNT(Z_COUNTED_P(z)) = 2;
 					GC_FLAGS(Z_COUNTED_P(z)) |= IS_ARRAY_IMMUTABLE;
 					Z_ARRVAL_P(z)->u.flags |= HASH_FLAG_STATIC_KEYS;
-					Z_ARRVAL_P(z)->u.flags &= ~HASH_FLAG_APPLY_PROTECTION;
 				}
 			}
 			break;
@@ -324,10 +322,12 @@ static void zend_persist_zval(zval *z)
 				Z_AST_P(z) = new_ptr;
 				Z_TYPE_FLAGS_P(z) = IS_TYPE_CONSTANT | IS_TYPE_COPYABLE;
 			} else {
-				zend_accel_store(Z_AST_P(z), sizeof(zend_ast_ref));
-				Z_ASTVAL_P(z) = zend_persist_ast(Z_ASTVAL_P(z));
+				zend_ast_ref *old_ref = Z_AST_P(z);
+				Z_ARR_P(z) = zend_accel_memdup(Z_AST_P(z), sizeof(zend_ast_ref));
+				zend_persist_ast(GC_AST(old_ref));
 				Z_TYPE_FLAGS_P(z) = IS_TYPE_CONSTANT | IS_TYPE_COPYABLE;
 				GC_REFCOUNT(Z_COUNTED_P(z)) = 2;
+				efree(old_ref);
 			}
 			break;
 	}
@@ -374,7 +374,6 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
 			GC_REFCOUNT(op_array->static_variables) = 2;
 			GC_TYPE_INFO(op_array->static_variables) = IS_ARRAY | (IS_ARRAY_IMMUTABLE << 8);
 			op_array->static_variables->u.flags |= HASH_FLAG_STATIC_KEYS;
-			op_array->static_variables->u.flags &= ~HASH_FLAG_APPLY_PROTECTION;
 		}
 	}
 
@@ -396,7 +395,9 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
 				zend_persist_zval(p);
 				p++;
 			}
+#if ZEND_USE_ABS_CONST_ADDR
 			efree(orig_literals);
+#endif
 		}
 	}
 
@@ -406,21 +407,35 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
 		op_array->opcodes = persist_ptr;
 	} else {
 		zend_op *new_opcodes = zend_accel_memdup(op_array->opcodes, sizeof(zend_op) * op_array->last);
-#if ZEND_USE_ABS_CONST_ADDR || ZEND_USE_ABS_JMP_ADDR
 		zend_op *opline = new_opcodes;
 		zend_op *end = new_opcodes + op_array->last;
 		int offset = 0;
 
 		for (; opline < end ; opline++, offset++) {
-# if ZEND_USE_ABS_CONST_ADDR
+#if ZEND_USE_ABS_CONST_ADDR
 			if (opline->op1_type == IS_CONST) {
 				opline->op1.zv = (zval*)((char*)opline->op1.zv + ((char*)op_array->literals - (char*)orig_literals));
 			}
 			if (opline->op2_type == IS_CONST) {
 				opline->op2.zv = (zval*)((char*)opline->op2.zv + ((char*)op_array->literals - (char*)orig_literals));
 			}
-# endif
-# if ZEND_USE_ABS_JMP_ADDR
+#else
+			if (opline->op1_type == IS_CONST) {
+				opline->op1.constant =
+					(char*)(op_array->literals +
+						((zval*)((char*)(op_array->opcodes + (opline - new_opcodes)) +
+						(int32_t)opline->op1.constant) - orig_literals)) -
+					(char*)opline;
+			}
+			if (opline->op2_type == IS_CONST) {
+				opline->op2.constant =
+					(char*)(op_array->literals +
+						((zval*)((char*)(op_array->opcodes + (opline - new_opcodes)) +
+						(int32_t)opline->op2.constant) - orig_literals)) -
+					(char*)opline;
+			}
+#endif
+#if ZEND_USE_ABS_JMP_ADDR
 			if (op_array->fn_flags & ZEND_ACC_DONE_PASS_TWO) {
 				/* fix jumps to point to new array */
 				switch (opline->opcode) {
@@ -446,13 +461,14 @@ static void zend_persist_op_array_ex(zend_op_array *op_array, zend_persistent_sc
 					case ZEND_DECLARE_ANON_INHERITED_CLASS:
 					case ZEND_FE_FETCH_R:
 					case ZEND_FE_FETCH_RW:
+					case ZEND_SWITCH_LONG:
+					case ZEND_SWITCH_STRING:
 						/* relative extended_value don't have to be changed */
 						break;
 				}
 			}
-# endif
-		}
 #endif
+		}
 
 		efree(op_array->opcodes);
 		op_array->opcodes = new_opcodes;

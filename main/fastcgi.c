@@ -76,7 +76,9 @@ static int is_impersonate = 0;
 # include <netdb.h>
 # include <signal.h>
 
-# if defined(HAVE_SYS_POLL_H) && defined(HAVE_POLL)
+# if defined(HAVE_POLL_H) && defined(HAVE_POLL)
+#  include <poll.h>
+# elif defined(HAVE_SYS_POLL_H) && defined(HAVE_POLL)
 #  include <sys/poll.h>
 # endif
 # if defined(HAVE_SYS_SELECT_H)
@@ -737,9 +739,9 @@ int fcgi_listen(const char *path, int backlog)
 		return listen_socket;
 
 #else
-		int path_len = strlen(path);
+		size_t path_len = strlen(path);
 
-		if (path_len >= (int)sizeof(sa.sa_unix.sun_path)) {
+		if (path_len >= sizeof(sa.sa_unix.sun_path)) {
 			fcgi_log(FCGI_ERROR, "Listening socket's path name is too long.\n");
 			return -1;
 		}
@@ -1430,7 +1432,7 @@ int fcgi_accept_request(fcgi_request *req)
 				break;
 #else
 				if (req->fd >= 0) {
-#if defined(HAVE_SYS_POLL_H) && defined(HAVE_POLL)
+#if defined(HAVE_POLL)
 					struct pollfd fds;
 					int ret;
 

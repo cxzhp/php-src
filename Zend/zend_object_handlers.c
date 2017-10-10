@@ -35,23 +35,14 @@
 
 #define DEBUG_OBJECT_HANDLERS 0
 
+#define ZEND_WRONG_PROPERTY_OFFSET   0
+#define ZEND_DYNAMIC_PROPERTY_OFFSET ((uint32_t)(-1))
+
 /* guard flags */
 #define IN_GET		(1<<0)
 #define IN_SET		(1<<1)
 #define IN_UNSET	(1<<2)
 #define IN_ISSET	(1<<3)
-
-#define Z_OBJ_PROTECT_RECURSION(zval_p) \
-	do { \
-		if (Z_OBJ_APPLY_COUNT_P(zval_p) >= 3) { \
-			zend_error_noreturn(E_ERROR, "Nesting level too deep - recursive dependency?"); \
-		} \
-		Z_OBJ_INC_APPLY_COUNT_P(zval_p); \
-	} while (0)
-
-
-#define Z_OBJ_UNPROTECT_RECURSION(zval_p) \
-	Z_OBJ_DEC_APPLY_COUNT_P(zval_p)
 
 /*
   __X accessors explanation:
@@ -76,8 +67,7 @@ ZEND_API void rebuild_object_properties(zend_object *zobj) /* {{{ */
 		zend_property_info *prop_info;
 		zend_class_entry *ce = zobj->ce;
 
-		ALLOC_HASHTABLE(zobj->properties);
-		zend_hash_init(zobj->properties, ce->default_properties_count, NULL, ZVAL_PTR_DTOR, 0);
+		zobj->properties = zend_new_array(ce->default_properties_count);
 		if (ce->default_properties_count) {
 			zend_hash_real_init(zobj->properties, 0);
 			zobj->properties->nInternalPointer = 0;
@@ -177,8 +167,7 @@ ZEND_API HashTable *zend_std_get_debug_info(zval *object, int *is_temp) /* {{{ *
 		}
 	} else if (Z_TYPE(retval) == IS_NULL) {
 		*is_temp = 1;
-		ALLOC_HASHTABLE(ht);
-		zend_hash_init(ht, 0, NULL, ZVAL_PTR_DTOR, 0);
+		ht = zend_new_array(0);
 		return ht;
 	}
 
@@ -533,7 +522,7 @@ ZEND_API uint32_t *zend_get_property_guard(zend_object *zobj, zend_string *membe
 			ALLOC_HASHTABLE(guards);
 			zend_hash_init(guards, 8, NULL, zend_property_guard_dtor, 0);
 			/* mark pointer as "special" using low bit */
-			zend_hash_add_new_ptr(guards, member,
+			zend_hash_add_new_ptr(guards, str,
 				(void*)(((zend_uintptr_t)&zv->u2.property_guard) | 1));
 			zend_string_release(Z_STR_P(zv));
 			ZVAL_ARR(zv, guards);
@@ -582,13 +571,13 @@ zval *zend_std_read_property(zval *object, zval *member, int type, void **cache_
 	/* make zend_get_property_info silent if we have getter - we may want to use it */
 	property_offset = zend_get_property_offset(zobj->ce, Z_STR_P(member), (type == BP_VAR_IS) || (zobj->ce->__get != NULL), cache_slot);
 
-	if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
-		if (EXPECTED(property_offset != ZEND_DYNAMIC_PROPERTY_OFFSET)) {
-			retval = OBJ_PROP(zobj, property_offset);
-			if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
-				goto exit;
-			}
-		} else if (EXPECTED(zobj->properties != NULL)) {
+	if (EXPECTED(IS_VALID_PROPERTY_OFFSET(property_offset))) {
+		retval = OBJ_PROP(zobj, property_offset);
+		if (EXPECTED(Z_TYPE_P(retval) != IS_UNDEF)) {
+			goto exit;
+		}
+	} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(property_offset))) {
+		if (EXPECTED(zobj->properties != NULL)) {
 			retval = zend_hash_find(zobj->properties, Z_STR_P(member));
 			if (EXPECTED(retval)) goto exit;
 		}
@@ -688,13 +677,13 @@ ZEND_API void zend_std_write_property(zval *object, zval *member, zval *value, v
 
 	property_offset = zend_get_property_offset(zobj->ce, Z_STR_P(member), (zobj->ce->__set != NULL), cache_slot);
 
-	if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
-		if (EXPECTED(property_offset != ZEND_DYNAMIC_PROPERTY_OFFSET)) {
-			variable_ptr = OBJ_PROP(zobj, property_offset);
-			if (Z_TYPE_P(variable_ptr) != IS_UNDEF) {
-				goto found;
-			}
-		} else if (EXPECTED(zobj->properties != NULL)) {
+	if (EXPECTED(IS_VALID_PROPERTY_OFFSET(property_offset))) {
+		variable_ptr = OBJ_PROP(zobj, property_offset);
+		if (Z_TYPE_P(variable_ptr) != IS_UNDEF) {
+			goto found;
+		}
+	} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(property_offset))) {
+		if (EXPECTED(zobj->properties != NULL)) {
 			if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
 				if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
 					GC_REFCOUNT(zobj->properties)--;
@@ -723,7 +712,7 @@ found:
 			zend_std_call_setter(&tmp_object, member, value);
 			(*guard) &= ~IN_SET;
 			zval_ptr_dtor(&tmp_object);
-		} else if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
+		} else if (EXPECTED(!IS_WRONG_PROPERTY_OFFSET(property_offset))) {
 			goto write_std_property;
 		} else {
 			if (Z_STRVAL_P(member)[0] == '\0' && Z_STRLEN_P(member) != 0) {
@@ -731,7 +720,7 @@ found:
 				goto exit;
 			}
 		}
-	} else if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
+	} else if (EXPECTED(!IS_WRONG_PROPERTY_OFFSET(property_offset))) {
 		zval tmp;
 
 write_std_property:
@@ -744,7 +733,7 @@ write_std_property:
 				Z_ADDREF_P(value);
 			}
 		}
-		if (EXPECTED(property_offset != ZEND_DYNAMIC_PROPERTY_OFFSET)) {
+		if (EXPECTED(IS_VALID_PROPERTY_OFFSET(property_offset))) {
 			ZVAL_COPY_VALUE(OBJ_PROP(zobj, property_offset), value);
 		} else {
 			if (!zobj->properties) {
@@ -878,49 +867,47 @@ static zval *zend_std_get_property_ptr_ptr(zval *object, zval *member, int type,
 
 	property_offset = zend_get_property_offset(zobj->ce, name, (zobj->ce->__get != NULL), cache_slot);
 
-	if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
-		if (EXPECTED(property_offset != ZEND_DYNAMIC_PROPERTY_OFFSET)) {
-			retval = OBJ_PROP(zobj, property_offset);
-			if (UNEXPECTED(Z_TYPE_P(retval) == IS_UNDEF)) {
-				if (EXPECTED(!zobj->ce->__get) ||
-				    UNEXPECTED((*zend_get_property_guard(zobj, name)) & IN_GET)) {
-					ZVAL_NULL(retval);
-					/* Notice is thrown after creation of the property, to avoid EG(std_property_info)
-					 * being overwritten in an error handler. */
-					if (UNEXPECTED(type == BP_VAR_RW || type == BP_VAR_R)) {
-						zend_error(E_NOTICE, "Undefined property: %s::$%s", ZSTR_VAL(zobj->ce->name), ZSTR_VAL(name));
-					}
-				} else {
-					/* we do have getter - fail and let it try again with usual get/set */
-					retval = NULL;
-				}
-			}
-		} else {
-			if (EXPECTED(zobj->properties)) {
-				if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
-					if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
-						GC_REFCOUNT(zobj->properties)--;
-					}
-					zobj->properties = zend_array_dup(zobj->properties);
-				}
-			    if (EXPECTED((retval = zend_hash_find(zobj->properties, name)) != NULL)) {
-					if (UNEXPECTED(Z_TYPE_P(member) != IS_STRING)) {
-						zend_string_release(name);
-					}
-					return retval;
-			    }
-			}
+	if (EXPECTED(IS_VALID_PROPERTY_OFFSET(property_offset))) {
+		retval = OBJ_PROP(zobj, property_offset);
+		if (UNEXPECTED(Z_TYPE_P(retval) == IS_UNDEF)) {
 			if (EXPECTED(!zobj->ce->__get) ||
 			    UNEXPECTED((*zend_get_property_guard(zobj, name)) & IN_GET)) {
-				if (UNEXPECTED(!zobj->properties)) {
-					rebuild_object_properties(zobj);
-				}
-				retval = zend_hash_update(zobj->properties, name, &EG(uninitialized_zval));
+				ZVAL_NULL(retval);
 				/* Notice is thrown after creation of the property, to avoid EG(std_property_info)
 				 * being overwritten in an error handler. */
 				if (UNEXPECTED(type == BP_VAR_RW || type == BP_VAR_R)) {
 					zend_error(E_NOTICE, "Undefined property: %s::$%s", ZSTR_VAL(zobj->ce->name), ZSTR_VAL(name));
 				}
+			} else {
+				/* we do have getter - fail and let it try again with usual get/set */
+				retval = NULL;
+			}
+		}
+	} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(property_offset))) {
+		if (EXPECTED(zobj->properties)) {
+			if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
+				if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
+					GC_REFCOUNT(zobj->properties)--;
+				}
+				zobj->properties = zend_array_dup(zobj->properties);
+			}
+		    if (EXPECTED((retval = zend_hash_find(zobj->properties, name)) != NULL)) {
+				if (UNEXPECTED(Z_TYPE_P(member) != IS_STRING)) {
+					zend_string_release(name);
+				}
+				return retval;
+		    }
+		}
+		if (EXPECTED(!zobj->ce->__get) ||
+		    UNEXPECTED((*zend_get_property_guard(zobj, name)) & IN_GET)) {
+			if (UNEXPECTED(!zobj->properties)) {
+				rebuild_object_properties(zobj);
+			}
+			retval = zend_hash_update(zobj->properties, name, &EG(uninitialized_zval));
+			/* Notice is thrown after creation of the property, to avoid EG(std_property_info)
+			 * being overwritten in an error handler. */
+			if (UNEXPECTED(type == BP_VAR_RW || type == BP_VAR_R)) {
+				zend_error(E_NOTICE, "Undefined property: %s::$%s", ZSTR_VAL(zobj->ce->name), ZSTR_VAL(name));
 			}
 		}
 	}
@@ -949,28 +936,27 @@ static void zend_std_unset_property(zval *object, zval *member, void **cache_slo
 
 	property_offset = zend_get_property_offset(zobj->ce, Z_STR_P(member), (zobj->ce->__unset != NULL), cache_slot);
 
-	if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
-		if (EXPECTED(property_offset != ZEND_DYNAMIC_PROPERTY_OFFSET)) {
-			zval *slot = OBJ_PROP(zobj, property_offset);
+	if (EXPECTED(IS_VALID_PROPERTY_OFFSET(property_offset))) {
+		zval *slot = OBJ_PROP(zobj, property_offset);
 
-			if (Z_TYPE_P(slot) != IS_UNDEF) {
-				zval_ptr_dtor(slot);
-				ZVAL_UNDEF(slot);
-				if (zobj->properties) {
-					zobj->properties->u.v.flags |= HASH_FLAG_HAS_EMPTY_IND;
-				}
-				goto exit;
+		if (Z_TYPE_P(slot) != IS_UNDEF) {
+			zval_ptr_dtor(slot);
+			ZVAL_UNDEF(slot);
+			if (zobj->properties) {
+				zobj->properties->u.v.flags |= HASH_FLAG_HAS_EMPTY_IND;
 			}
-		} else if (EXPECTED(zobj->properties != NULL)) {
-			if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
-				if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
-					GC_REFCOUNT(zobj->properties)--;
-				}
-				zobj->properties = zend_array_dup(zobj->properties);
+			goto exit;
+		}
+	} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(property_offset))
+	 && EXPECTED(zobj->properties != NULL)) {
+		if (UNEXPECTED(GC_REFCOUNT(zobj->properties) > 1)) {
+			if (EXPECTED(!(GC_FLAGS(zobj->properties) & IS_ARRAY_IMMUTABLE))) {
+				GC_REFCOUNT(zobj->properties)--;
 			}
-			if (EXPECTED(zend_hash_del(zobj->properties, Z_STR_P(member)) != FAILURE)) {
-				goto exit;
-			}
+			zobj->properties = zend_array_dup(zobj->properties);
+		}
+		if (EXPECTED(zend_hash_del(zobj->properties, Z_STR_P(member)) != FAILURE)) {
+			goto exit;
 		}
 	} else if (UNEXPECTED(EG(exception))) {
 		goto exit;
@@ -1446,6 +1432,9 @@ static int zend_std_compare_objects(zval *o1, zval *o2) /* {{{ */
 	zobj1 = Z_OBJ_P(o1);
 	zobj2 = Z_OBJ_P(o2);
 
+	if (zobj1 == zobj2) {
+		return 0; /* the same object */
+	}
 	if (zobj1->ce != zobj2->ce) {
 		return 1; /* different classes */
 	}
@@ -1458,40 +1447,43 @@ static int zend_std_compare_objects(zval *o1, zval *o2) /* {{{ */
 		p1 = zobj1->properties_table;
 		p2 = zobj2->properties_table;
 		end = p1 + zobj1->ce->default_properties_count;
-		Z_OBJ_PROTECT_RECURSION(o1);
-		Z_OBJ_PROTECT_RECURSION(o2);
+
+		/* It's enough to protect only one of the objects.
+		 * The second one may be referenced from the first and this may cause
+		 * false recursion detection.
+		 */
+		/* use bitwise OR to make only one conditional jump */
+		if (UNEXPECTED(Z_IS_RECURSIVE_P(o1))) {
+			zend_error_noreturn(E_ERROR, "Nesting level too deep - recursive dependency?");
+		}
+		Z_PROTECT_RECURSION_P(o1);
 		do {
 			if (Z_TYPE_P(p1) != IS_UNDEF) {
 				if (Z_TYPE_P(p2) != IS_UNDEF) {
 					zval result;
 
 					if (compare_function(&result, p1, p2)==FAILURE) {
-						Z_OBJ_UNPROTECT_RECURSION(o1);
-						Z_OBJ_UNPROTECT_RECURSION(o2);
+						Z_UNPROTECT_RECURSION_P(o1);
 						return 1;
 					}
 					if (Z_LVAL(result) != 0) {
-						Z_OBJ_UNPROTECT_RECURSION(o1);
-						Z_OBJ_UNPROTECT_RECURSION(o2);
+						Z_UNPROTECT_RECURSION_P(o1);
 						return Z_LVAL(result);
 					}
 				} else {
-					Z_OBJ_UNPROTECT_RECURSION(o1);
-					Z_OBJ_UNPROTECT_RECURSION(o2);
+					Z_UNPROTECT_RECURSION_P(o1);
 					return 1;
 				}
 			} else {
 				if (Z_TYPE_P(p2) != IS_UNDEF) {
-					Z_OBJ_UNPROTECT_RECURSION(o1);
-					Z_OBJ_UNPROTECT_RECURSION(o2);
+					Z_UNPROTECT_RECURSION_P(o1);
 					return 1;
 				}
 			}
 			p1++;
 			p2++;
 		} while (p1 != end);
-		Z_OBJ_UNPROTECT_RECURSION(o1);
-		Z_OBJ_UNPROTECT_RECURSION(o2);
+		Z_UNPROTECT_RECURSION_P(o1);
 		return 0;
 	} else {
 		if (!zobj1->properties) {
@@ -1524,13 +1516,13 @@ static int zend_std_has_property(zval *object, zval *member, int has_set_exists,
 
 	property_offset = zend_get_property_offset(zobj->ce, Z_STR_P(member), 1, cache_slot);
 
-	if (EXPECTED(property_offset != ZEND_WRONG_PROPERTY_OFFSET)) {
-		if (EXPECTED(property_offset != ZEND_DYNAMIC_PROPERTY_OFFSET)) {
-			value = OBJ_PROP(zobj, property_offset);
-			if (Z_TYPE_P(value) != IS_UNDEF) {
-				goto found;
-			}
-		} else if (EXPECTED(zobj->properties != NULL) &&
+	if (EXPECTED(IS_VALID_PROPERTY_OFFSET(property_offset))) {
+		value = OBJ_PROP(zobj, property_offset);
+		if (Z_TYPE_P(value) != IS_UNDEF) {
+			goto found;
+		}
+	} else if (EXPECTED(IS_DYNAMIC_PROPERTY_OFFSET(property_offset))) {
+		if (EXPECTED(zobj->properties != NULL) &&
 		           (value = zend_hash_find(zobj->properties, Z_STR_P(member))) != NULL) {
 found:
 			switch (has_set_exists) {
@@ -1740,4 +1732,6 @@ ZEND_API zend_object_handlers std_object_handlers = {
  * c-basic-offset: 4
  * indent-tabs-mode: t
  * End:
+ * vim600: sw=4 ts=4 fdm=marker
+ * vim<600: sw=4 ts=4
  */

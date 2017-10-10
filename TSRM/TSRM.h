@@ -69,22 +69,9 @@ typedef int ts_rsrc_id;
 #elif defined(PTHREADS)
 # define THREAD_T pthread_t
 # define MUTEX_T pthread_mutex_t *
-#elif defined(NSAPI)
-# define THREAD_T SYS_THREAD
-# define MUTEX_T CRITICAL
-#elif defined(PI3WEB)
-# define THREAD_T PIThread *
-# define MUTEX_T PISync *
 #elif defined(TSRM_ST)
 # define THREAD_T st_thread_t
 # define MUTEX_T st_mutex_t
-#elif defined(BETHREADS)
-# define THREAD_T thread_id
-typedef struct {
-  sem_id sem;
-  int32 ben;
-} beos_ben;
-# define MUTEX_T beos_ben *
 #endif
 
 #ifdef HAVE_SIGNAL_H
@@ -155,6 +142,7 @@ TSRM_API void *tsrm_set_interpreter_context(void *new_ctx);
 TSRM_API void tsrm_free_interpreter_context(void *context);
 
 TSRM_API void *tsrm_get_ls_cache(void);
+TSRM_API uint8_t tsrm_is_main_thread(void);
 
 #ifdef TSRM_WIN32
 # define TSRM_TLS __declspec(thread)
@@ -215,3 +203,12 @@ TSRM_API void *tsrm_get_ls_cache(void);
 #endif /* ZTS */
 
 #endif /* TSRM_H */
+
+/*
+ * Local variables:
+ * tab-width: 4
+ * c-basic-offset: 4
+ * End:
+ * vim600: sw=4 ts=4 fdm=marker
+ * vim<600: sw=4 ts=4
+ */

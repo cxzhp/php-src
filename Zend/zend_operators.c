@@ -80,12 +80,12 @@ static const unsigned char tolower_map[256] = {
 		zend_binary_strncasecmp
  */
 
-ZEND_API int ZEND_FASTCALL zend_atoi(const char *str, int str_len) /* {{{ */
+ZEND_API int ZEND_FASTCALL zend_atoi(const char *str, size_t str_len) /* {{{ */
 {
 	int retval;
 
 	if (!str_len) {
-		str_len = (int)strlen(str);
+		str_len = strlen(str);
 	}
 	retval = ZEND_STRTOL(str, NULL, 0);
 	if (str_len>0) {
@@ -108,12 +108,12 @@ ZEND_API int ZEND_FASTCALL zend_atoi(const char *str, int str_len) /* {{{ */
 }
 /* }}} */
 
-ZEND_API zend_long ZEND_FASTCALL zend_atol(const char *str, int str_len) /* {{{ */
+ZEND_API zend_long ZEND_FASTCALL zend_atol(const char *str, size_t str_len) /* {{{ */
 {
 	zend_long retval;
 
 	if (!str_len) {
-		str_len = (int)strlen(str);
+		str_len = strlen(str);
 	}
 	retval = ZEND_STRTOL(str, NULL, 0);
 	if (str_len>0) {
@@ -225,8 +225,10 @@ ZEND_API void ZEND_FASTCALL convert_scalar_to_number(zval *op) /* {{{ */
 					if (Z_TYPE(holder) == IS_LONG) {				\
 						if (op == result) {							\
 							zval_ptr_dtor(op);						\
+							ZVAL_LONG(op, Z_LVAL(holder));			\
+						} else {									\
+							(op) = &(holder);						\
 						}											\
-						(op) = &(holder);							\
 					}												\
 					break;											\
 			}														\
@@ -537,7 +539,7 @@ try_again:
 			break;
 		}
 		case IS_LONG: {
-			ZVAL_NEW_STR(op, zend_long_to_str(Z_LVAL_P(op)));
+			ZVAL_STR(op, zend_long_to_str(Z_LVAL_P(op)));
 			break;
 		}
 		case IS_DOUBLE: {
@@ -581,8 +583,7 @@ static void convert_scalar_to_array(zval *op) /* {{{ */
 
 	ZVAL_COPY_VALUE(&entry, op);
 
-	ZVAL_NEW_ARR(op);
-	zend_hash_init(Z_ARRVAL_P(op), 8, NULL, ZVAL_PTR_DTOR, 0);
+	array_init_size(op, 1);
 	zend_hash_index_add_new(Z_ARRVAL_P(op), 0, &entry);
 }
 /* }}} */
@@ -606,7 +607,7 @@ try_again:
 						/* fast copy */
 						if (!Z_OBJCE_P(op)->default_properties_count &&
 							obj_ht == Z_OBJ_P(op)->properties &&
-							!ZEND_HASH_GET_APPLY_COUNT(Z_OBJ_P(op)->properties) &&
+							!GC_IS_RECURSIVE(obj_ht) &&
 							EXPECTED(Z_OBJ_P(op)->handlers == &std_object_handlers)) {
 							arr = zend_proptable_to_symtable(obj_ht, 0);
 						} else {
@@ -632,8 +633,7 @@ try_again:
 			}
 			break;
 		case IS_NULL:
-			ZVAL_NEW_ARR(op);
-			zend_hash_init(Z_ARRVAL_P(op), 8, NULL, ZVAL_PTR_DTOR, 0);
+			array_init(op);
 			break;
 		case IS_REFERENCE:
 			zend_unwrap_reference(op);
@@ -2856,9 +2856,13 @@ ZEND_API void ZEND_FASTCALL zend_locale_sprintf_double(zval *op ZEND_FILE_LINE_D
 
 ZEND_API zend_string* ZEND_FASTCALL zend_long_to_str(zend_long num) /* {{{ */
 {
-	char buf[MAX_LENGTH_OF_LONG + 1];
-	char *res = zend_print_long_to_buf(buf + sizeof(buf) - 1, num);
-	return zend_string_init(res, buf + sizeof(buf) - 1 - res, 0);
+	if ((zend_ulong)num <= 9) {
+		return ZSTR_CHAR((zend_uchar)'0' + (zend_uchar)num);
+	} else {
+		char buf[MAX_LENGTH_OF_LONG + 1];
+		char *res = zend_print_long_to_buf(buf + sizeof(buf) - 1, num);
+		return zend_string_init(res, buf + sizeof(buf) - 1 - res, 0);
+	}
 }
 /* }}} */
 
@@ -3129,4 +3133,6 @@ ZEND_API zend_long ZEND_FASTCALL zend_dval_to_lval_slow(double d)
  * c-basic-offset: 4
  * indent-tabs-mode: t
  * End:
+ * vim600: sw=4 ts=4 fdm=marker
+ * vim<600: sw=4 ts=4
  */
